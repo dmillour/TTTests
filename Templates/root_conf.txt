@@ -1,3 +1,11 @@
 #test conf
 test=true
 filename=[% root.filename %]
+test_scalar=[% root.test_scalar %]
+test_scalar2=[% root.test_scalar2 %]
+test_scalar3=[% top.one.test.test_scalar %]
+test_scalar4=[% top.two.test.test_scalar %]
+
+[% FOREACH line = root.test_array -%]
+test_array=[% line %]
+[% END %]

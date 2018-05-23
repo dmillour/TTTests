@@ -59,7 +59,7 @@ sub readdatafile
 	my $filename=shift;
 	my %hash=(filename=>$filename);
 	my $xml = new XML::Simple;
-	my $config = $xml->XMLin($filename,KeyAttr => { scalar => 'name', array =>'name' }, ForceArray => 1);
+	my $config = $xml->XMLin($filename,KeyAttr => { scalar => 'name', array =>'name'  }, ForceArray => ['filter','scalar','array']);
 	
 	print DumpTree($config,$filename);
 
@@ -74,6 +74,60 @@ sub filter
 	my $hashref = shift;
 	my $xmltree = shift;
 	
+	#working on scalars
+	my @scalars = keys %{$xmltree-> {'scalar'}};
+	foreach my $item (@scalars)
+	{
+		#print "item = $item\n";
+		my $filters = $xmltree->{'scalar'}{$item}{'filter'};
+		foreach my $filter ( @$filters)
+		{
+			my $match=1;
+			foreach my $att (keys %$filter)
+			{
+				if($att ne 'value')
+				{
+					$match=0 if(exists $data{'context'}{$att} and $data{'context'}{$att} eq $filter->{$att});
+					#print "att = $att value=$filter->{$att} match=$match\n";
+				}
+			}
+			if($match == 1)
+			{
+				$hashref->{$item}=$filter->{'value'}
+			}
+		}
+	}
+	
+	#working on arrays
+	my @arrays = keys %{$xmltree-> {'array'}};
+	foreach my $item (@arrays)
+	{
+		#print "item = $item\n";
+		my $filters = $xmltree->{'array'}{$item}{'filter'};
+		foreach my $filter ( @$filters)
+		{
+			my $match=1;
+			foreach my $att (keys %$filter)
+			{
+				if($att ne 'value')
+				{
+					$match=0 if(exists $data{'context'}{$att} and $data{'context'}{$att} eq $filter->{$att});
+					#print "att = $att value=$filter->{$att} match=$match\n";
+				}
+			}
+			if($match == 1)
+			{
+				if(exists $hashref->{$item})
+				{
+					push @{$hashref->{$item}} , $filter->{'value'};
+				}
+				else
+				{
+					$hashref->{$item}=[$filter->{'value'}];
+				}
+			}
+		}
+	}
 }
 
 find($datacallback,'Data');
