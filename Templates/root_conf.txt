@@ -1,0 +1,3 @@
+#test conf
+test=true
+filename=[% root.filename %]

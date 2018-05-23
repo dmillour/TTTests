@@ -1,0 +1,14 @@
+<config>
+	<scalar name="test_scalar">
+		<filter value="0" typr="EMS"/>
+		<filter value="1" platform="platform1"/>
+		<filter value="2" platform="platform2"/>
+		<filter value="3" platform="platform1" type="DTS"/>
+	</scalar>
+	<array name="test_array">
+		<filter value="a" typr="EMS"/>
+		<filter value="b" platform="platform1"/>
+		<filter value="c" platform="platform2"/>
+		<filter value="d" platform="platform1" type="DTS"/>
+	</array>
+</config>

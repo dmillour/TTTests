@@ -1,0 +1,5 @@
+# Configuration file "[% template.name %]" generated at [% USE date %][% date.format(template.modtime) %] by [% context.user %]
+# Context =
+[% FOREACH item IN context.keys.sort -%]
+# 	[% item %] = [% context.$item %]
+[% END %]
