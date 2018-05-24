@@ -102,12 +102,12 @@ sub filter
 		my $filters = $xmltree->{'scalar'}{$item}{'filter'};
 		foreach my $filter ( @$filters)
 		{
-			my $match=1;
+			my $match=0;
 			foreach my $att (keys %$filter)
 			{
 				if($att ne 'value')
 				{
-					$match=0 if(exists $data{'context'}{$att} and $data{'context'}{$att} eq $filter->{$att});
+					$match=1 if(exists $data{'context'}{$att} and $data{'context'}{$att} eq $filter->{$att});
 					#print "att = $att value=$filter->{$att} match=$match\n";
 				}
 			}
@@ -126,12 +126,12 @@ sub filter
 		my $filters = $xmltree->{'array'}{$item}{'filter'};
 		foreach my $filter ( @$filters)
 		{
-			my $match=1;
+			my $match=0;
 			foreach my $att (keys %$filter)
 			{
 				if($att ne 'value')
 				{
-					$match=0 if(exists $data{'context'}{$att} and $data{'context'}{$att} eq $filter->{$att});
+					$match=1 if(exists $data{'context'}{$att} and $data{'context'}{$att} eq $filter->{$att});
 					#print "att = $att value=$filter->{$att} match=$match\n";
 				}
 			}
