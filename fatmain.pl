@@ -6,19 +6,39 @@ use File::Find qw(find);
 use Data::TreeDumper ;
 use XML::Simple qw(:strict);
 use File::Spec::Win32;
+use Getopt::Long;
+
+my $server;
+my $platform;
+
+GetOptions ('server|s=s' => \$server, 'platform|p=s' => \$platform);
 
 # Building context
 
-my %context = ( hostname=>'server1',
-				platform=>'platform1',
-				user=>$ENV{USERNAME},
-				ip=>'192.168.0.1',
-				type=>'DTS');
+sub readtargetfile
+{
+	my $filename="Context\\target.xml";
+	my %hash=(user=>$ENV{USERNAME});
+	my $xml = new XML::Simple;
+	my $config = $xml->XMLin($filename,KeyAttr => { platform => 'name', server =>'name'}, ForceArray => ['platform','server']);
+	
+	print DumpTree($config,$filename);
+
+	print "server=$server platform=$platform\n";
+	$hash{"server"}=$server;
+	$hash{"platform"}=$platform;
+	
+	die "unknown server: $platform.$server\n" if(not exists $config->{"platform"}{$platform}{"server"}{$server});
+	%hash=(%hash,%{$config->{"platform"}{$platform}{"server"}{$server}});
+	
+	return \%hash;
+};
+
+
+
+my %data=(context=>readtargetfile());
 
 # Building the data
-
-my %data=(context=>\%context);
-
 
 my $datacallback = sub 
 {
@@ -61,7 +81,7 @@ sub readdatafile
 	my $xml = new XML::Simple;
 	my $config = $xml->XMLin($filename,KeyAttr => { scalar => 'name', array =>'name'  }, ForceArray => ['filter','scalar','array']);
 	
-	print DumpTree($config,$filename);
+	#print DumpTree($config,$filename);
 
 	
 	filter(\%hash,$config);
@@ -170,8 +190,7 @@ my $tt = Template->new
 	STRICT => 1,
 	TRIM => 0,
 	RECURSION => 0,
-	PRE_PROCESS => 'tt_header.tt',
-	NAMESPACE => {context => Template::Namespace::Constants->new(%context)}
+	PRE_PROCESS => 'tt_header.tt'
 });
 
 foreach my $file (@templatefiles)

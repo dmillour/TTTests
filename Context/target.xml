@@ -1,0 +1,22 @@
+<target>
+	<platform name="platform1">
+		<server name="server1"
+				ip="192.168.0.1"
+				type="DTS"
+		/>
+		<server name="server2"
+				ip="192.168.0.2"
+				type="EMS"
+		/>
+	</platform>
+	<platform name="platform2">
+		<server name="server1"
+				ip="192.168.1.1"
+				type="DTS"
+		/>
+		<server name="server2"
+				ip="192.168.1.2"
+				type="EMS"
+		/>
+	</platform>
+</target>
