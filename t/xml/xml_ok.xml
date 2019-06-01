@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configuration application="APP" family="FAM">
+<configuration destinations="APP.FAM">
   <database name="DB">
-    
+    <items name="myname" date="20190305"/>
+    <deck>
+      <level1 field1="whatever" field2="whatever2">
+        <level2 field1="noneever1"/>
+        <level2 field1="noneever1"/>
+        <level2 field1="noneever1"/>
+        <level2 field1="noneever1"/>
+        <level2 field1="noneever1"/>
+      </level1>
+    </deck>
+    <maxlv field="something"/>
   </database>
 </configuration>
