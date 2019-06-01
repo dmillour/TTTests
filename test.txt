@@ -1,0 +1,33 @@
+# un
+# deux
+
+db DBNAME3
+
+# can insert any record by declaring it with the record type in capital and then {} to define the content, the lowercase declarative 'record' is optional
+record RECTYPE1 {
+	# id type may starts by the literal 'id' in lowercase, if value empty will not be takken in account
+	id ID1 = TEST3
+	
+	# can insert another record inside a record, in this case the inserter is child of the enclosing one
+	record RECTYPE2 {
+		id ID2 = H
+		
+		record RECTYPE3 {
+			id ID2 = -
+			
+			# the id can also be declared between the 
+			record RECTYPE4 id AB {
+				int	FIELD1 = 405
+			}
+			
+			# several records of the same type can be inserted in the same parent, they will be inserted respecting the order of declaration, id must be uniq amongst the children of the same type
+			record RECTYPE4 id AC {
+				int	FIELD1 = 405
+			}
+			
+			# many types can be inserted as long as it is suported by the schema, and everything can be done on one line
+			record RECTYPE5 id TT {FIELD10 = T;FIELD11 = 10}
+		}
+		
+	}
+}

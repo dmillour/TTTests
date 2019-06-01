@@ -1,0 +1,64 @@
+# declare wiche database the data is for, everything folowing the db declaration belongs to this database, until another db declaration 
+db DBNAME
+
+# can comment anywhere as long as the # is the first non space of the line
+# separator are either ; or return, multiple space/tabs are reduced to one, lines are trimed
+# only one items per DB
+items {
+	# string type may starts by the literal 'string' in lowercase, if value empty will not be takken in account
+	string FIELD1 = any text trimed, delimited by the return
+	string FIELD2 = ' text can be enclosed in single quote, and then it is not trimed, but no return allowed, can contain as many single quote and double quote as long as it ends with a single quote '
+	FIELD3 = " text can be enclosed in double quote, and then it is not trimed, but no return allowed, can contain as many single quote and double quote as long as it ends with a double quote "
+	
+	# integer type may starts with the literal 'int' in lowercase, if value empty will not be takken in account, round the value if a float
+	int	FIELD4 = 404
+	
+	# float type may starts with the literal 'float' in lowercase, accept exponential notation with capital 'E', if value empty will not be takken in account, adds .0 if an integer. the decimal separator is '.'
+	float FIELD5 = 10.54
+	
+	# pointer type may starts with the name in capital of the record it is pointing to, accept a subscript (base 1, 0 equals null) or a key in the classic forme  ( _._._._ ) , if value empty will not be takken in account
+	# key or subscript pointer must be within the file, although it can be declared later
+	TYPE1 FIELD6 = TEST3.H.-.AB
+	FIELD7 = 3
+	
+	# flags type may starts with lowercase 'bool', accepts as false [f, false, F, False, FALSE, 0], as true [t, true, T, True, TRUE, anything else not empty] , if value empty will not be takken in account
+	bool FIELD8 = T
+	
+	# date type may starts with lowercase 'date', accept epoch (habitat ref) or timestamps habitat style, if value empty will not be takken in account
+	date FIELD9 = 999999999999
+	FIELD10 = 1-JAN-1979T0:0:0
+}
+
+# can insert any record by declaring it with the record type in capital and then {} to define the content, the lowercase declarative 'record' is optional
+record RECTYPE1 {
+	# id type may starts by the literal 'id' in lowercase, if value empty will not be takken in account
+	id ID1 = TEST3
+	
+	# can insert another record inside a record, in this case the inserter is child of the enclosing one
+	record RECTYPE2 {
+		id ID2 = H
+		
+		record RECTYPE3 {
+			id ID2 = -
+			
+			# the id can also be declared between the 
+			record RECTYPE4 id AB {
+				int	FIELD1 = 405
+			}
+			
+			# several records of the same type can be inserted in the same parent, they will be inserted respecting the order of declaration, id must be uniq amongst the children of the same type
+			record RECTYPE4 id AC {
+				int	FIELD1 = 405
+			}
+			
+			# many types can be inserted as long as it is suported by the schema, and everything can be done on one line
+			record RECTYPE5 id TT {FIELD10 = T;FIELD11 = 10}
+		}
+		
+	}
+}
+
+# array value must be declared outside of records, it may starts with the lower case declarator folowed with the field name in capital and the double or triple denominator between []
+# in the denominator accepts either subscript of key. the denominators must be in the schema declaration order
+int FIELD1 [RECTYPE2 = 1 , RECTYPE3 = 1 ] = 666
+FIELD2[RECTYPE1=1,RECTYPE4=TEST3.H.-.AB] = false

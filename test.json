@@ -1,0 +1,41 @@
+{ 
+	_database : "DBNAME3",
+	_items : {
+		FIELD1 : 0,
+		FIELD2 : 1
+	},
+	_records : [
+		{
+			_record : "RECTYPE1",
+			ID1 : "TEST3",
+		},
+		{
+			_record : "RECTYPE2",
+			ID2 : "H",
+			_children : [
+				{
+					_record : "RECTYPE3",
+					ID2 : "-",
+					_children : [
+						{
+							_record : "RECTYPE4",
+							ID : "AB",
+							FIELD1 : 405
+						},
+						{
+							_record : "RECTYPE4",
+							ID : "AC",
+							FIELD1 : 406
+						},
+						{
+							_record : "RECTYPE5",
+							ID : "TT",
+							FIELD10 : 1,
+							FIELD11 : 10
+						},
+					]
+				}
+			]
+		}
+	]
+}
