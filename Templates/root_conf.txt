@@ -9,3 +9,5 @@ test_scalar4=[% top.two.test.test_scalar %]
 [% FOREACH line = root.test_array -%]
 test_array=[% line %]
 [% END %]
+
+context test = [% context.ip %]
