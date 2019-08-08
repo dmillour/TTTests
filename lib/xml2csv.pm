@@ -15,7 +15,7 @@ sub parse_xml {
     { '/configuration' => sub {
         $data_ref->{destinations}=[split /,/ , uc $_->att('destinations')];},
      '/configuration/database' => sub {
-       my $database_ref= { name => $_->att('name'), records =>[ map {_get_children($_)} $_->children()]};
+       my $database_ref= bless { name => $_->att('name'), records =>[ map {_get_children($_)} $_->children()]} => 'Database';
        push @{$data_ref->{databases}}, $database_ref;}
     }
   );
@@ -25,9 +25,9 @@ sub parse_xml {
 
 sub _get_children {
   my ($elem_ref) = @_;
-  my $record_ref = {_fields => $elem_ref->atts(), _name => uc $elem_ref->gi(),_children => []} ;
+  my $record_ref = bless {fields => $elem_ref->atts(), name => uc $elem_ref->gi(),children => []} => 'Record' ;
   foreach my $child_ref ($elem_ref->children()) {
-    push @{$record_ref->{_children}}, _get_children($child_ref);
+    push @{$record_ref->{children}}, _get_children($child_ref);
   }
   return $record_ref;
 }
@@ -38,23 +38,29 @@ sub convert2csv {
     $fh = *STDOUT;
   };
   foreach my $record_ref (@{$data_ref->{records}}) {
-    _print_records($record_ref,$fh);
+    $record_ref->print_records($fh);
   }
 
 }
 
-sub _print_records {
-  my ($data_ref, $fh) = @_;
-  print $fh $data_ref->{_name};
-  foreach my $key ( keys %{$data_ref->{_fields}}) {
-    my $value = $data_ref->{_fields}{$key};
+sub parse_csv {
+  my ($filename) = @_;
+  my $data_ref = {};
+}
+
+sub Record::print_records {
+  my ($record_ref, $fh) = @_;
+  print $fh $record_ref->{name};
+  foreach my $key ( keys %{$record_ref->{fields}}) {
+    my $value = $record_ref->{fields}{$key};
     $key = uc $key;
     print $fh ",$key='$value'";
   }
   print $fh "\n";
-  foreach my $record_ref (@{$data_ref->{_children}}) {
-    _print_records($record_ref,$fh);
+  foreach my $child_ref (@{$record_ref->{children}}) {
+    $child_ref->print_records($fh);
   }
 }
+
 #EOF
 1;

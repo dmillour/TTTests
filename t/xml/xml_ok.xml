@@ -12,5 +12,12 @@
       </level1>
     </deck>
     <maxlv field="something"/>
+    <maxlv field="something2"/>
+    <maxlv field="something3"/>
+    <maxlv field="something4"/>
+    <maxlv field="something5"/>
+    <maxlv field="something6"/>
+    <maxlv field="something7"/>
+    <maxlv field="something8"/>
   </database>
 </configuration>
