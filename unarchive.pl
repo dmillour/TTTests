@@ -11,18 +11,23 @@ use Digest::file qw(digest_file_hex);
 use Storable;
 use File::Path qw(make_path remove_tree);
 use Data::TreeDumper;
+use MIME::Types;
 
 use Image::Resize;
 use MIME::Base64;
+use threads;
+use Thread::Queue;
 
 
 my $source_folderpath = './input';
 my $tmp_folderpath    = './tmp';
 my $dst_folderpath    = './output';
+my $buffer_size = 7 ;
 
 my $catalog_path        = './catalog.db';
 my $catalog_ref         = {accepted => {}, rejected => {}, archives => {}};
 my @legal_archive_names = ('zip', 'rar');
+my $mt = MIME::Types->new();
 
 
 sub unarchive {
@@ -33,6 +38,7 @@ sub unarchive {
    my %unarchivers = (
       'zip' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
       'rar' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
+      '7z' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
    );
    system($unarchivers{$extention});
    return $dest_tmp_folderpath;
@@ -44,7 +50,7 @@ sub scan_sourcefolder {
    while (my $filename = readdir $source_folderfh) {
       my $filepath = File::Spec->catdir($source_folderpath, $filename);
       next if $filename =~ /^\./ or -d $filepath;
-      next unless exists $catalog_ref->{archives}{$filename} and  $catalog_ref->{archives}{$filename};
+      next if exists $catalog_ref->{archives}{$filename} and not $catalog_ref->{archives}{$filename};
       if ($filename =~ /\.(\w+)$/) {
          my $extention = lc $1;
          next unless grep { $extention eq $_ } @legal_archive_names;
@@ -73,6 +79,7 @@ sub add {
       }
    }
    else {
+      return $results unless $mt->mimeTypeOf($file_path) =~ /^image/;
       my $hash = digest_file_hex($file_path, 'SHA1');
       unless (exists $catalog_ref->{accepted}{$hash} or exists $catalog_ref->{rejected}{$hash}) {
          $results->{$hash} = $filename;
@@ -131,31 +138,60 @@ sub swipe {
 
 
    $mw->geometry("$max{x}x$max{y}");
-
-
    my $frame  = $mw->Frame(-background => 'black')->pack(-expand => 1, -fill => "both");
    my $canvas = $frame->Canvas()->pack(-expand => 1, -fill => "both");
-   push @items, $canvas->createRectangle(0,           0, $max{x} / 2, $max{y}, -fill => "red");
-   push @items, $canvas->createRectangle($max{x} / 2, 0, $max{x},     $max{y}, -fill => "green");
 
-   my $loadpic_sub = sub {
-      my ($file) = @_;
-      my $im = Image::Resize->new($file);
-      my $gd = $im->resize($max{x}, $max{y});
+   my $queue_in = Thread::Queue->new();
+   my $queue_out = Thread::Queue->new();
 
-      #Tk needs base64 encoded image files
-      return encode_base64($gd->png);
+   my $producepic_sub = sub {
+     while ( defined (my $i = $queue_in->dequeue())){
+       say "dequeue $i";
+       last if ( $i < 0);
+       my $file = File::Spec->catfile($tmp_folderpath, $to_sort[$i][1]);
+       my $im = Image::Resize->new($file);
+       my $gd = $im->resize($max{x}, $max{y});
+       #Tk needs base64 encoded image files
+       $queue_out->enqueue([$i,encode_base64($gd->png)]);
+
+     }
+     threads->detach();
+     threads->exit();
    };
 
+   my $loadpic_sub = sub {
+       my $i = $$i_ref > 0 ? $$i_ref-1 : 0 ;
+       my $j = $$i_ref + $buffer_size < $#to_sort ? $$i_ref + $buffer_size : $#to_sort ;
+       for my $k ($i..$j){
+         unless ( exists $to_sort[$k][3] and $to_sort[$k][3]) {
+           $queue_in->enqueue($k);
+           $to_sort[$k][3] = 1;
+         }
+       }
+       if ($i > 0 ) {
+         delete $to_sort[$i][4];
+       }
+       while (defined(my $item_ref = $queue_out->dequeue_nb())) {
+         $to_sort[$item_ref->[0]][4] = $item_ref->[1];
+       }
+       while (not exists $to_sort[$$i_ref][4]) {
+         my $item_ref = $queue_out->dequeue();
+         $to_sort[$item_ref->[0]][4] = $item_ref->[1];
+       }
+     };
+
+
+  my $t = threads->create($producepic_sub);
+
+
    my $update_sub = sub {
-      my $file = File::Spec->catfile($tmp_folderpath, $to_sort[$$i_ref][1]);
-      $mw->title("$filename : $file");
+       &$loadpic_sub();
+      $mw->title("$filename ($$i_ref/$#to_sort) : $to_sort[$$i_ref][1]");
       $canvas->delete(@items);
       $items[0] = $canvas->createRectangle(0,           0, $max{x} / 2, $max{y}, -fill => "red");
       $items[1] = $canvas->createRectangle($max{x} / 2, 0, $max{x},     $max{y}, -fill => "green");
-      my $image = $canvas->Photo(-data => &$loadpic_sub($file), -format => 'png');
+      my $image = $canvas->Photo(-data => $to_sort[$$i_ref][4], -format => 'png');
       $items[2] = $canvas->createImage($max{x} / 2 + $max{x} / 2 * $to_sort[$$i_ref][2], $max{y} / 2, -image => $image);
-
    };
 
    my $goright_sub = sub {
@@ -181,6 +217,13 @@ sub swipe {
       }
    };
 
+   my $execution_sub = sub {
+     for my $i ($$i_ref..$#to_sort) {
+        $to_sort[$i][2] = -1;
+     }
+     $mw->destroy();
+   };
+
    my $resize_sub = sub {
       if ($mw->geometry() =~ /^(\d+)x(\d+)/) {
          $max{x} = $1;
@@ -197,11 +240,14 @@ sub swipe {
    $mw->bind('<KeyPress-r>',   $resize_sub);
    $mw->bind('<KeyRelease-w>', $goup_sub);
    $mw->bind('<KeyRelease-s>', $godown_sub);
-   $mw->bind('<KeyRelease-q>', sub { $mw->destroy() });
+   $mw->bind('<KeyRelease-e>', $execution_sub);
+   $mw->bind('<KeyRelease-q>', sub { $mw->destroy()});
 
    &$update_sub();
 
    MainLoop;
+   $queue_in->enqueue(-1);
+
 
    #blacklist the rejected and whitelist the accepted
    for my $item_ref (@to_sort) {
