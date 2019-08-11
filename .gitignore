@@ -37,4 +37,5 @@ inc/
 output/*
 input/*
 tmp/*
-catalog.db
+*.db
+*.dbm
