@@ -137,32 +137,35 @@ sub scan_sourcefolder {
          my $extention = lc $1;
          next unless grep { $extention eq $_ } @legal_archive_names;
          my $dest_tmp_folderpath = unarchive($filename, $extention);
-         my @files = add($filename);
+         my @files = add($filename,$tmp_folderpath);
          my $file_nb =  @files;
          set_archive_remains($filename,$file_nb);
          if ($file_nb) {
             @files = swipe($filename,@files);
-            say 'debug 6';
             move($filename,@files);
-            say 'debug 7';
          }
-         say 'debug 8';
          remove_tree($dest_tmp_folderpath);
-         say 'debug 9';
       }
    }
    close($source_folderfh);
 }
 
+sub scan_destfolder {
+   my @files = add('.',$dst_folderpath);
+   for my $item_ref (@files) {
+     accept_file($item_ref->[0],$item_ref->[1]);
+   }
+}
+
 sub add {
-   my ($filename) = @_;
+   my ($filename,$tmp_folderpath) = @_;
    my @results;
    my $file_path = File::Spec->catdir($tmp_folderpath, $filename);
    if (-d $file_path) {
       opendir(my $tmpfh, $file_path) or die "unable to open '$file_path' $!";
       while (my $subfilename = readdir $tmpfh) {
          next if $subfilename =~ /^\./;
-         push @results, add(File::Spec->catfile($filename, $subfilename));
+         push @results, add(File::Spec->catfile($filename, $subfilename),$tmp_folderpath);
       }
    }
    else {
@@ -338,8 +341,13 @@ sub swipe {
    return @results;
 }
 
+if ($ARGV[0] eq 'rebuild'){
+  scan_destfolder();
+}
+else {
+  scan_sourcefolder();
+}
 
-scan_sourcefolder();
 
 dump_dbs('archives');
 dump_dbs('accepted');
