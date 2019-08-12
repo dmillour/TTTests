@@ -17,113 +17,121 @@ use MIME::Base64;
 use threads;
 use Thread::Queue;
 use BerkeleyDB;
+use Getopt::Long;
 
 
 my $source_folderpath = './input';
 my $tmp_folderpath    = './tmp';
 my $dst_folderpath    = './output';
-my $buffer_size_down = 7 ;
-my $buffer_size_up = 3 ;
+my $buffer_size_down  = 7;
+my $buffer_size_up    = 3;
 
-my %catalog_paths        = (accepted => 'accepted.dbm', rejected => 'rejected.dbm', archives => 'archives.dbm');
-my %catalog  ;
-for my $recname (keys %catalog_paths) {
-  say "load db :'$recname'";
-  $catalog{$recname} = new BerkeleyDB::Hash( -Filename => $catalog_paths{$recname},-Flags => DB_CREATE ) or die "Cannot open file: '$catalog_paths{$recname}' $!";
-}
-my @legal_archive_names = ('zip', 'rar','7z');
-my $mt = MIME::Types->new();
+my %catalog_paths = (accepted => 'accepted.dbm', rejected => 'rejected.dbm', archives => 'archives.dbm');
+my %catalog;
 
-my $queue_in = Thread::Queue->new();
+
+my @legal_archive_names = ('zip', 'rar', '7z');
+my $mt                  = MIME::Types->new();
+
+my $queue_in  = Thread::Queue->new();
 my $queue_out = Thread::Queue->new();
 
+
+#command line options
+my $verbose = '';
+my $rebuild = '';
+GetOptions('verbose' => \$verbose, 'rebuild' => \$rebuild);
+
+
+#DB funtions -- Begin
+sub db_init {
+   for my $recname (keys %catalog_paths) {
+      say "load db :'$recname'";
+      $catalog{$recname} = new BerkeleyDB::Hash(-Filename => $catalog_paths{$recname}, -Flags => DB_CREATE) or die "Cannot open file: '$catalog_paths{$recname}' $!";
+   }
+}
+
+sub db_close {
+   for my $recname (keys %catalog_paths) {
+      say "close db :'$recname'";
+      $catalog{$recname}->db_close();
+   }
+}
 
 sub should_skip_archive {
    my ($filename) = @_;
    my $status = $catalog{archives}->db_exists($filename);
    if ($status) {
-     return 0;
+      return 0;
    }
    else {
-     my $val;
-     $status = $catalog{archives}->db_get($filename,$val);
-       return not $val;
+      my $val;
+      $status = $catalog{archives}->db_get($filename, $val);
+      return not $val;
    }
 }
 
 sub set_archive_remains {
-   my ($filename,$val) = @_;
-   my $status = $catalog{archives}->db_put($filename,$val);
+   my ($filename, $val) = @_;
+   my $status = $catalog{archives}->db_put($filename, $val);
    if ($status) {
-     die "unable seting in the archive db value :'$val' into '$filename' $!";
+      die "unable seting in the archive db value :'$val' into '$filename' $!";
    }
 }
 
 sub is_file_known {
-  my ($hash) = @_;
-  my $status1 = $catalog{accepted}->db_exists($hash);
-  my $status2 = $catalog{rejected}->db_exists($hash);
-  my $status = $status1 &&  $status2 ;
-  return not $status;
+   my ($hash)  = @_;
+   my $status1 = $catalog{accepted}->db_exists($hash);
+   my $status2 = $catalog{rejected}->db_exists($hash);
+   my $status  = $status1 && $status2;
+   return not $status;
 }
 
 sub accept_file {
-  my ($hash,$filename) = @_;
-  my $status = $catalog{accepted}->db_put($hash,$filename);
-  if ($status) {
-    die "unable seting in the accepted db value :'$filename' into '$hash' $!";
-  }
+   my ($hash, $filename) = @_;
+   my $status = $catalog{accepted}->db_put($hash, $filename);
+   if ($status) {
+      die "unable seting in the accepted db value :'$filename' into '$hash' $!";
+   }
 }
 
 sub reject_file {
-  my ($hash,$filename) = @_;
-  my $status = $catalog{rejected}->db_put($hash,$filename);
-  if ($status) {
-    die "unable seting in the rejected db value :'$filename' into '$hash' $!";
-  }
+   my ($hash, $filename) = @_;
+   my $status = $catalog{rejected}->db_put($hash, $filename);
+   if ($status) {
+      die "unable seting in the rejected db value :'$filename' into '$hash' $!";
+   }
 }
 
 sub dump_dbs {
-  my ($dbname) = @_;
-  say "$dbname db:";
-  my $cursor = $catalog{$dbname}->db_cursor() ;
-  my $key ='';
-  my $val ='';
-  while ($cursor->c_get($key, $val, DB_NEXT) == 0) {
+   my ($dbname) = @_;
+   say "$dbname db:";
+   my $cursor = $catalog{$dbname}->db_cursor();
+   my $key    = '';
+   my $val    = '';
+   while ($cursor->c_get($key, $val, DB_NEXT) == 0) {
       print "\tKey: " . $key . ", value: " . $val . "\n";
-  }
+   }
 }
 
+#DB funtions -- encoded
+
+#worker job to cache the image rezizing
 sub producepic {
-  threads->detach();
-  while ( defined (my $item_ref = $queue_in->dequeue())){
-    my $index = $item_ref->[0];
-    my $file = $item_ref->[1];
-    my $x = $item_ref->[2];
-    my $y = $item_ref->[3];
-    say "dequeue $index";
-    last unless -f $file;
-    my $im = Image::Resize->new($file);
-    my $gd = $im->resize($x, $y);
-    #Tk needs base64 encoded image files
-    $queue_out->enqueue([$index,encode_base64($gd->png)]);
-  }
-};
+   threads->detach();
+   while (defined(my $item_ref = $queue_in->dequeue())) {
+      my $index = $item_ref->[0];
+      my $file  = $item_ref->[1];
+      my $x     = $item_ref->[2];
+      my $y     = $item_ref->[3];
 
-my $t = threads->create('producepic');
+      last unless -f $file;
+      my $im = Image::Resize->new($file);
+      my $gd = $im->resize($x, $y);
 
-sub unarchive {
-   my ($filename, $extention) = @_;
-   my $dest_tmp_folderpath = File::Spec->catdir($tmp_folderpath,    $filename);
-   my $src_archivepath     = File::Spec->catdir($source_folderpath, $filename);
-   mkdir $dest_tmp_folderpath;
-   my %unarchivers = (
-      'zip' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
-      'rar' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
-      '7z' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
-   );
-   system($unarchivers{$extention});
-   return $dest_tmp_folderpath;
+      #Tk needs base64 encoded image files
+      $queue_out->enqueue([$index, encode_base64($gd->png)]);
+   }
 }
 
 
@@ -137,12 +145,12 @@ sub scan_sourcefolder {
          my $extention = lc $1;
          next unless grep { $extention eq $_ } @legal_archive_names;
          my $dest_tmp_folderpath = unarchive($filename, $extention);
-         my @files = add($filename,$tmp_folderpath);
-         my $file_nb =  @files;
-         set_archive_remains($filename,$file_nb);
+         my @files               = add($filename, $tmp_folderpath);
+         my $file_nb             = @files;
+         set_archive_remains($filename, $file_nb);
          if ($file_nb) {
-            @files = swipe($filename,@files);
-            move($filename,@files);
+            @files = swipe($filename, @files);
+            move($filename, @files);
          }
          remove_tree($dest_tmp_folderpath);
       }
@@ -151,35 +159,49 @@ sub scan_sourcefolder {
 }
 
 sub scan_destfolder {
-   my @files = add('.',$dst_folderpath);
+   my @files = add('.', $dst_folderpath);
    for my $item_ref (@files) {
-     accept_file($item_ref->[0],$item_ref->[1]);
+      accept_file($item_ref->[0], $item_ref->[1]);
    }
 }
 
+sub unarchive {
+   my ($filename, $extention) = @_;
+   my $dest_tmp_folderpath = File::Spec->catdir($tmp_folderpath,    $filename);
+   my $src_archivepath     = File::Spec->catdir($source_folderpath, $filename);
+   mkdir $dest_tmp_folderpath;
+   my %unarchivers = (
+      'zip' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
+      'rar' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
+      '7z'  => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
+   );
+   system($unarchivers{$extention});
+   return $dest_tmp_folderpath;
+}
+
 sub add {
-   my ($filename,$tmp_folderpath) = @_;
+   my ($filename, $tmp_folderpath) = @_;
    my @results;
    my $file_path = File::Spec->catdir($tmp_folderpath, $filename);
    if (-d $file_path) {
       opendir(my $tmpfh, $file_path) or die "unable to open '$file_path' $!";
       while (my $subfilename = readdir $tmpfh) {
          next if $subfilename =~ /^\./;
-         push @results, add(File::Spec->catfile($filename, $subfilename),$tmp_folderpath);
+         push @results, add(File::Spec->catfile($filename, $subfilename), $tmp_folderpath);
       }
    }
    else {
       return @results unless $mt->mimeTypeOf($file_path) =~ /^image/;
       my $hash = digest_file_hex($file_path, 'SHA1');
       unless (is_file_known($hash)) {
-          push @results, [$hash,$filename,0];
+         push @results, [$hash, $filename, 0];
       }
    }
    return @results;
 }
 
 sub move {
-   my ($filename,@files) = @_;
+   my ($filename, @files) = @_;
    for my $item_ref (@files) {
       my $src_filepath = File::Spec->catfile($tmp_folderpath, $item_ref->[1]);
       my $dst_filepath = File::Spec->catfile($dst_folderpath, rename_dest_files(File::Spec->abs2rel($item_ref->[1], $filename)));
@@ -188,7 +210,7 @@ sub move {
       my ($volume, $dirs) = File::Spec->splitpath($dst_filepath);
       make_path($dirs);
       rename $src_filepath, $dst_filepath;
-      accept_file($item_ref->[0],$dst_filepath);
+      accept_file($item_ref->[0], $dst_filepath);
    }
 }
 
@@ -214,7 +236,7 @@ sub check_dest {
 }
 
 sub swipe {
-   my ( $filename, @to_sort ) = @_;
+   my ($filename, @to_sort) = @_;
 
    my $mw = MainWindow->new;
    my %max;
@@ -231,35 +253,35 @@ sub swipe {
 
    my $loadpic_sub = sub {
       my ($force) = @_;
-       my $i = $$i_ref - $buffer_size_up > 0 ? $$i_ref-$buffer_size_up : 0 ;
-       my $j = $$i_ref + $buffer_size_down < $#to_sort ? $$i_ref + $buffer_size_down : $#to_sort ;
-       for my $k ($i..$j){
+      my $i = $$i_ref - $buffer_size_up > 0           ? $$i_ref - $buffer_size_up   : 0;
+      my $j = $$i_ref + $buffer_size_down < $#to_sort ? $$i_ref + $buffer_size_down : $#to_sort;
+      for my $k ($i .. $j) {
          if ($force) {
-           delete $to_sort[$k][3] if exists $to_sort[$k][3];
-           delete $to_sort[$k][4] if exists $to_sort[$k][4];
+            delete $to_sort[$k][3] if exists $to_sort[$k][3];
+            delete $to_sort[$k][4] if exists $to_sort[$k][4];
          }
-         unless ( exists $to_sort[$k][3] and $to_sort[$k][3]) {
-           $queue_in->enqueue([$k,File::Spec->catfile($tmp_folderpath, $to_sort[$k][1]), $max{x}, $max{y}]);
-           $to_sort[$k][3] = 1;
+         unless (exists $to_sort[$k][3] and $to_sort[$k][3]) {
+            $queue_in->enqueue([$k, File::Spec->catfile($tmp_folderpath, $to_sort[$k][1]), $max{x}, $max{y}]);
+            $to_sort[$k][3] = 1;
          }
-       }
-       if ($i-1 >= 0 and exists $to_sort[$i-1][4] ) {
-         delete $to_sort[$i-1][3];
-         delete $to_sort[$i-1][4];
-       }
-       while (defined(my $item_ref = $queue_out->dequeue_nb())) {
+      }
+      if ($i - 1 >= 0 and exists $to_sort[$i - 1][4]) {
+         delete $to_sort[$i - 1][3];
+         delete $to_sort[$i - 1][4];
+      }
+      while (defined(my $item_ref = $queue_out->dequeue_nb())) {
          $to_sort[$item_ref->[0]][4] = $item_ref->[1];
-       }
-       while (not exists $to_sort[$$i_ref][4]) {
+      }
+      while (not exists $to_sort[$$i_ref][4]) {
          my $item_ref = $queue_out->dequeue();
          $to_sort[$item_ref->[0]][4] = $item_ref->[1];
-       }
-     };
+      }
+   };
 
 
    my $update_sub = sub {
-     my ($force) = @_;
-       &$loadpic_sub($force);
+      my ($force) = @_;
+      &$loadpic_sub($force);
       $mw->title("$filename ($$i_ref/$#to_sort) : $to_sort[$$i_ref][1]");
       $canvas->delete(@items);
       $items[0] = $canvas->createRectangle(0,           0, $max{x} / 2, $max{y}, -fill => "red");
@@ -292,10 +314,10 @@ sub swipe {
    };
 
    my $execution_sub = sub {
-     for my $i ($$i_ref..$#to_sort) {
-        $to_sort[$i][2] = -1;
-     }
-     $mw->destroy();
+      for my $i ($$i_ref .. $#to_sort) {
+         $to_sort[$i][2] = -1;
+      }
+      $mw->destroy();
    };
 
    my $resize_sub = sub {
@@ -315,7 +337,7 @@ sub swipe {
    $mw->bind('<KeyRelease-w>', $goup_sub);
    $mw->bind('<KeyRelease-s>', $godown_sub);
    $mw->bind('<KeyRelease-e>', $execution_sub);
-   $mw->bind('<KeyRelease-q>', sub { $mw->destroy()});
+   $mw->bind('<KeyRelease-q>', sub { $mw->destroy() });
 
    &$update_sub();
 
@@ -323,7 +345,7 @@ sub swipe {
 
    #blacklist the rejected and whitelist the accepted
    my @results;
-   my $file_nb=0;
+   my $file_nb = 0;
    for my $item_ref (@to_sort) {
       if ($item_ref->[2] == -1) {
          reject_file($item_ref->[0], $item_ref->[1]);
@@ -332,31 +354,34 @@ sub swipe {
          $file_nb++;
       }
       elsif ($item_ref->[2] == 1) {
-         push @results , [$item_ref->[0],$item_ref->[1]];
+         push @results, [$item_ref->[0], $item_ref->[1]];
       }
-
-
    }
-   set_archive_remains($filename,$file_nb);
+   set_archive_remains($filename, $file_nb);
    return @results;
 }
 
-if ($ARGV[0] eq 'rebuild'){
-  scan_destfolder();
+
+#main
+
+db_init();
+
+#one worker
+my $t = threads->create('producepic');
+
+if ($rebuild) {
+   scan_destfolder();
 }
 else {
-  scan_sourcefolder();
+   scan_sourcefolder();
 }
 
-
-dump_dbs('archives');
-dump_dbs('accepted');
-dump_dbs('rejected');
-
-
-for my $recname (keys %catalog_paths) {
-  say "close db :'$recname'";
-  $catalog{$recname}->db_close();
+if ($verbose) {
+   dump_dbs('accepted');
+   dump_dbs('rejected');
+   dump_dbs('archives');
 }
+
+db_close();
 
 exit 0;
