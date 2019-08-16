@@ -23,8 +23,9 @@ use Getopt::Long;
 my $source_folderpath = './input';
 my $tmp_folderpath    = './tmp';
 my $dst_folderpath    = './output';
-my $buffer_size_down  = 7;
+my $buffer_size_down  = 16;
 my $buffer_size_up    = 3;
+my $threads_nb        = 6;
 
 my %catalog_paths = (accepted => 'accepted.dbm', rejected => 'rejected.dbm', archives => 'archives.dbm');
 my %catalog;
@@ -145,7 +146,7 @@ sub scan_sourcefolder {
          my $extention = lc $1;
          next unless grep { $extention eq $_ } @legal_archive_names;
          my $dest_tmp_folderpath = unarchive($filename, $extention);
-         my @files               = add($filename, $tmp_folderpath);
+         my @files               = sort { $a->[1] cmp $b->[1] } add($filename, $tmp_folderpath);
          my $file_nb             = @files;
          set_archive_remains($filename, $file_nb);
          if ($file_nb) {
@@ -171,9 +172,9 @@ sub unarchive {
    my $src_archivepath     = File::Spec->catdir($source_folderpath, $filename);
    mkdir $dest_tmp_folderpath;
    my %unarchivers = (
-      'zip' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
-      'rar' => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
-      '7z'  => "7z -y -o$dest_tmp_folderpath x $src_archivepath",
+      'zip' => "7z -y -o$dest_tmp_folderpath x $src_archivepath > log.txt 2>&1",
+      'rar' => "7z -y -o$dest_tmp_folderpath x $src_archivepath > log.txt 2>&1",
+      '7z'  => "7z -y -o$dest_tmp_folderpath x $src_archivepath > log.txt 2>&1",
    );
    system($unarchivers{$extention});
    return $dest_tmp_folderpath;
@@ -313,6 +314,13 @@ sub swipe {
       }
    };
 
+   my $pass_sub = sub {
+      if ($to_sort[$$i_ref][2] != 0) {
+         &$godown_sub();
+      }
+   };
+
+
    my $execution_sub = sub {
       for my $i ($$i_ref .. $#to_sort) {
          $to_sort[$i][2] = -1;
@@ -366,9 +374,10 @@ sub swipe {
 
 db_init();
 
-#one worker
-my $t = threads->create('producepic');
-
+#many worker
+for (1..$threads_nb){
+   threads->create('producepic');
+}
 if ($rebuild) {
    scan_destfolder();
 }
