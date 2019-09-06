@@ -27,9 +27,9 @@ $twig_ref->parsefile('config.xml');
 my $twig_root_ref = $twig_ref->root();
 
 
-my $source_folderpath = $twig_root_ref->first_child('source')->text();
-my $tmp_folderpath    = $twig_root_ref->first_child('tmp')->text();
-my $dst_folderpath    = $twig_root_ref->first_child('dst')->text();
+my $source_folderpath = File::Spec->canonpath($twig_root_ref->first_child('source')->text());
+my $tmp_folderpath    = File::Spec->canonpath($twig_root_ref->first_child('tmp')->text());
+my $dst_folderpath    = File::Spec->canonpath($twig_root_ref->first_child('dst')->text());
 my $buffer_size_down  = $twig_root_ref->first_child('buffer_size_down')->text();
 my $buffer_size_up    = $twig_root_ref->first_child('buffer_size_up')->text();
 my $threads_nb        = $twig_root_ref->first_child('threads_nb')->text();
@@ -40,7 +40,7 @@ for my $folder_elem_ref ($twig_root_ref->descendants('folder')) {
 }
 
 
-my %catalog_paths = (accepted => 'accepted.dbm', rejected => 'rejected.dbm', archives => 'archives.dbm');
+my %catalog_paths = (accepted => 'accepted.dbm', rejected => 'rejected.dbm', archives => 'archives.dbm', special => 'special.dbm');
 my %catalog;
 
 
@@ -54,7 +54,8 @@ my $queue_out = Thread::Queue->new();
 #command line options
 my $verbose = '';
 my $rebuild = '';
-GetOptions('verbose' => \$verbose, 'rebuild' => \$rebuild);
+my $recheck = '';
+GetOptions('verbose' => \$verbose, 'rebuild' => \$rebuild, 'recheck' => \$recheck);
 
 
 #DB funtions -- Begin
@@ -101,21 +102,65 @@ sub is_file_known {
    return not $status;
 }
 
+sub is_accepted {
+   my ($hash) = @_;
+   my $status = $catalog{accepted}->db_exists($hash);
+   return not $status;
+}
+
+sub is_rejected {
+   my ($hash) = @_;
+   my $status = $catalog{rejected}->db_exists($hash);
+   return not $status;
+}
+
 sub accept_file {
    my ($hash, $filename) = @_;
    my $status = $catalog{accepted}->db_put($hash, $filename);
+   if (is_rejected($hash)) {
+      $catalog{rejected}->db_del($hash);
+   }
    if ($status) {
       die "unable seting in the accepted db value :'$filename' into '$hash' $!";
    }
 }
 
+
 sub reject_file {
    my ($hash, $filename) = @_;
+   if (is_accepted($hash)) {
+      $catalog{accepted}->db_del($hash);
+   }
    my $status = $catalog{rejected}->db_put($hash, $filename);
    if ($status) {
       die "unable seting in the rejected db value :'$filename' into '$hash' $!";
    }
 }
+
+sub is_special {
+   my ($hash) = @_;
+   my $status = $catalog{special}->db_exists($hash);
+   return not $status;
+}
+
+sub set_special {
+   my ($hash, $key, $filename) = @_;
+   my $status = $catalog{special}->db_put($hash, "$key,$filename");
+   if ($status) {
+      die "unable seting in the special db value :'$filename' into '$hash' $!";
+   }
+}
+
+sub get_special {
+   my ($hash) = @_;
+   my $result;
+   my $status = $catalog{special}->db_get($hash, $result);
+   if ($status) {
+      die "unable geting '$hash' in the special db values $!";
+   }
+   return $result;
+}
+
 
 sub dump_dbs {
    my ($dbname) = @_;
@@ -145,50 +190,65 @@ sub producepic {
       eval {
          my $im = Image::Resize->new($file);
          my $gd = $im->resize($x, $y);
+
+         #Tk needs base64 encoded image files
          $res = encode_base64($gd->png);
          $ok  = 1;
       };
-
-      #Tk needs base64 encoded image files
       $queue_out->enqueue([$index, $ok, $res]);
    }
 }
 
 
-sub scan_sourcefolder {
+sub scan_new_archives {
    opendir(my $source_folderfh, $source_folderpath) or die "unable to open '$source_folderpath' $!";
-   while (my $filename = readdir $source_folderfh) {
-      my $filepath = File::Spec->catdir($source_folderpath, $filename);
-      next if $filename =~ /^\./ or -d $filepath;
-      next if should_skip_archive($filename);
-      if ($filename =~ /\.(\w+)$/) {
+   while (my $archivename = readdir $source_folderfh) {
+      my $archivepath = File::Spec->catdir($source_folderpath, $archivename);
+      next if $archivename =~ /^\./ or -d $archivepath;
+      next if should_skip_archive($archivename);
+      if ($archivename =~ /\.(\w+)$/) {
          my $extention = lc $1;
          next unless grep { $extention eq $_ } @legal_archive_names;
-         my $dest_tmp_folderpath = unarchive($filename, $extention);
-         my @files               = sort { $a->{filename} cmp $b->{filename} } add($filename, $tmp_folderpath);
-         my $file_nb             = @files;
-         set_archive_remains($filename, $file_nb);
-         if ($file_nb) {
-            @files = swipe($filename, @files);
-            move($filename, @files);
-         }
+         my $dest_tmp_folderpath = unarchive($archivename, $extention);
+         scan_images($dest_tmp_folderpath, $archivename);
          remove_tree($dest_tmp_folderpath);
       }
    }
    close($source_folderfh);
 }
 
-sub scan_destfolder {
-   my @files = add('.', $dst_folderpath);
-   for my $item_ref (@files) {
-      accept_file($item_ref->[0], $item_ref->[1]);
+sub scan_images {
+   my ($root_folderpath, $archivename) = @_;
+   my @files   = sort { $a->{filename} cmp $b->{filename} } add($root_folderpath);
+   my $file_nb = @files;
+   if ($file_nb) {
+      @files   = swipe(@files);
+      $file_nb = move($root_folderpath, @files);
    }
+   return $file_nb;
+}
+
+sub scan_destfolder {
+   my ($recheck) = @_;
+   my @files = add($dst_folderpath);
+
+   if ($recheck) {
+      @files = swipe(@files);
+      move($dst_folderpath, @files);
+   }
+   else {
+      for my $item_ref (@files) {
+         accept_file($item_ref->{hash}, $item_ref->{filename});
+      }
+      add_special();
+   }
+
 }
 
 sub unarchive {
-   my ($filename, $extention) = @_;
-   my $dest_tmp_folderpath = File::Spec->catdir($tmp_folderpath,    $filename);
-   my $src_archivepath     = File::Spec->catdir($source_folderpath, $filename);
+   my ($archivename, $extention) = @_;
+   my $dest_tmp_folderpath = File::Spec->catdir($tmp_folderpath,    $archivename);
+   my $src_archivepath     = File::Spec->catdir($source_folderpath, $archivename);
    mkdir $dest_tmp_folderpath;
    my %unarchivers = (
       'zip' => "7z -y -o$dest_tmp_folderpath x $src_archivepath > log.txt 2>&1",
@@ -200,42 +260,96 @@ sub unarchive {
 }
 
 sub add {
-   my ($filename, $tmp_folderpath) = @_;
+   my ($root_folderpath) = @_;
+   return if (grep { $root_folderpath eq $_ } map { File::Spec->catdir($dst_folderpath, $_->[1]) } values %special_folders);
    my @results;
-   my $file_path = File::Spec->catdir($tmp_folderpath, $filename);
-   if (-d $file_path) {
-      opendir(my $tmpfh, $file_path) or die "unable to open '$file_path' $!";
+   opendir(my $tmpfh, $root_folderpath) or die "unable to open '$root_folderpath' $!";
+   while (my $subfilename = readdir $tmpfh) {
+      next if $subfilename =~ /^\./;
+      my $subfilepath = File::Spec->catfile($root_folderpath, $subfilename);
+      if (-d $subfilepath) {
+         push @results, add($subfilepath);
+      }
+      else {
+         my $type = $mt->mimeTypeOf($subfilepath);
+         unless ($type && $type =~ /^image/) {
+            say "skipped because not an image: '$subfilepath'";
+            next;
+         }
+         my $hash = digest_file_hex($subfilepath, 'SHA1');
+         if ($recheck or not is_file_known($hash)) {
+            if ($recheck and is_special($hash)) {
+               my @special = split ',', get_special($hash);
+               push @results, {hash => $hash, filename => $subfilepath, status => 0, special => $special[0]};
+            }
+            else {
+               push @results, {hash => $hash, filename => $subfilepath, status => 0};
+            }
+
+         }
+      }
+
+   }
+   return grep { defined $_ } @results;
+}
+
+sub add_special {
+   my @folders = map { File::Spec->catdir($dst_folderpath, $_->[1]) } values %special_folders;
+   for my $key (keys %special_folders) {
+      my $folder = File::Spec->catdir($dst_folderpath, $special_folders{$key}[1]);
+      opendir(my $tmpfh, $folder) or die "unable to open '$folder' $!";
       while (my $subfilename = readdir $tmpfh) {
          next if $subfilename =~ /^\./;
-         push @results, add(File::Spec->catfile($filename, $subfilename), $tmp_folderpath);
+         my $subfilepath = File::Spec->catfile($folder, $subfilename);
+         next if -d $subfilepath;
+         my $hash = digest_file_hex($subfilepath, 'SHA1');
+         if (is_special($hash)) {
+            my $old_filepath = get_special($hash);
+            if ($old_filepath ne $subfilepath) {
+               unlink $subfilepath;
+            }
+         }
+         else {
+            set_special($hash, $key, $subfilepath);
+         }
       }
    }
-   else {
-      return @results unless $mt->mimeTypeOf($file_path) =~ /^image/;
-      my $hash = digest_file_hex($file_path, 'SHA1');
-      unless (is_file_known($hash)) {
-         push @results, {hash => $hash, filename => $filename, status => 0};
-      }
-   }
-   return @results;
+
 }
 
 sub move {
-   my ($filename, @files) = @_;
+   my ($root_folderpath, @files) = @_;
+
+   #blacklist the rejected and whitelist the accepted
+   my $file_nb = 0;
    for my $item_ref (@files) {
-      my $src_filepath = File::Spec->catfile($tmp_folderpath, $item_ref->{filename});
-      my $dst_filepath = File::Spec->catfile($dst_folderpath, rename_dest_files(File::Spec->abs2rel($item_ref->{filename}, $filename)));
-      if ($item_ref->{special}) {
-         my $special_folderpath = File::Spec->catdir($dst_folderpath, $special_folders{$item_ref->{special}}[1]);
-         copy_special_file($src_filepath, $special_folderpath);
+      my $src_filepath = File::Spec->canonpath($item_ref->{filename});
+      my $status       = exists $item_ref->{status} && $item_ref->{status};
+      if ($status == -1) {
+         reject_file($item_ref->{hash}, $item_ref->{filename});
+         unlink $src_filepath;
       }
-      say "copying source:'$src_filepath' \tto '$dst_filepath'";
-      $dst_filepath = check_dest($dst_filepath);
-      my ($volume, $dirs) = File::Spec->splitpath($dst_filepath);
-      make_path($dirs);
-      rename $src_filepath, $dst_filepath;
-      accept_file($item_ref->{hash}, $dst_filepath);
+      elsif ($status == 0) {
+         $file_nb++;
+      }
+      elsif ($status == 1) {
+         if (exists $item_ref->{special} and $item_ref->{special}) {
+            copy_special_file($item_ref->{special}, $src_filepath);
+         }
+
+         #verify that the source file is not already in the destination folder
+         if (index $src_filepath, File::Spec->canonpath($dst_folderpath)) {
+            my $dst_filepath = File::Spec->catfile($dst_folderpath, rename_dest_files(File::Spec->abs2rel($item_ref->{filename}, $root_folderpath)));
+            say "copying source:'$src_filepath' \tto '$dst_filepath'";
+            $dst_filepath = check_dest($dst_filepath);
+            my ($volume, $dirs) = File::Spec->splitpath($dst_filepath);
+            make_path($dirs);
+            rename $src_filepath, $dst_filepath;
+            accept_file($item_ref->{hash}, $dst_filepath);
+         }
+      }
    }
+   return $file_nb;
 }
 
 sub rename_dest_files {
@@ -246,14 +360,28 @@ sub rename_dest_files {
 }
 
 sub copy_special_file {
-   my ($filename, $dst_folder) = @_;
+   my ($key, $src_filepath) = @_;
+   my $dst_folder = File::Spec->catdir($dst_folderpath, $special_folders{$key}[1]);
    make_path($dst_folder);
-   if ($filename =~ /\.([^\.]+)$/) {
+   my $hash = digest_file_hex($src_filepath, 'SHA1');
+   if (is_special($hash)) {
+      my $current_special_filepath = get_special($hash);
+      unless (index $current_special_filepath, $dst_folder) {
+         say "special '$src_filepath' already in '$current_special_filepath'";
+         return;
+      }
+      else {
+         unlink $current_special_filepath;
+         say "delete special '$current_special_filepath'";
+      }
+   }
+   if ($src_filepath =~ /\.([^\.]+)$/) {
       my $ext          = lc $1;
       my $index        = get_special_index($dst_folder);
       my $dst_filepath = File::Spec->catfile($dst_folder, sprintf "%04d.%s", $index, $ext);
-      say "special source '$filename'\tto '$dst_filepath'";
-      copy($filename, $dst_filepath) or die "Copy failed: $!";
+      say "special source '$src_filepath'\tto '$dst_filepath'";
+      copy($src_filepath, $dst_filepath) or die "Copy failed: $!";
+      set_special($hash, $key, $dst_filepath);
    }
 }
 
@@ -284,7 +412,8 @@ sub get_special_index {
 }
 
 sub swipe {
-   my ($filename, @to_sort) = @_;
+   my (@to_sort) = @_;
+   return unless @to_sort;
 
    my $mw = MainWindow->new;
    my %max;
@@ -310,7 +439,7 @@ sub swipe {
             delete $to_sort[$k]{ok}       if exists $to_sort[$k]{ok};
          }
          unless (exists $to_sort[$k]{resizing} and $to_sort[$k]{resizing}) {
-            $queue_in->enqueue([$k, File::Spec->catfile($tmp_folderpath, $to_sort[$k]{filename}), $max{x}, $max{y}]);
+            $queue_in->enqueue([$k, $to_sort[$k]{filename}, $max{x}, $max{y}]);
             $to_sort[$k]{resizing} = 1;
          }
       }
@@ -340,8 +469,9 @@ sub swipe {
       my ($force) = @_;
       &$loadpic_sub($force);
 
+
       # make the title of the Main Windows
-      my $title = "$filename ($$i_ref/$#to_sort) : $to_sort[$$i_ref]{filename}";
+      my $title = "$to_sort[$$i_ref]{filename}  ($$i_ref/$#to_sort) :";
       if (exists $to_sort[$$i_ref]{special} and $to_sort[$$i_ref]{special}) {
          $title .= " [" . $special_folders{$to_sort[$$i_ref]{special}}[0] . "]";
       }
@@ -405,7 +535,8 @@ sub swipe {
       my ($key) = @_;
       return sub {
          $to_sort[$$i_ref]{special} = $key;
-         &$update_sub();
+         &$goright_sub();
+         &$godown_sub();
       };
    };
 
@@ -423,26 +554,12 @@ sub swipe {
       $mw->bind("<KeyRelease-$key>", &$special_sub_factory($key));
    }
 
+
    &$update_sub();
 
    MainLoop;
 
-   #blacklist the rejected and whitelist the accepted
-   my @results;
-   my $file_nb = 0;
-   for my $item_ref (@to_sort) {
-      if ($item_ref->{status} == -1) {
-         reject_file($item_ref->{hash}, $item_ref->{filename});
-      }
-      elsif ($item_ref->{status} == 0) {
-         $file_nb++;
-      }
-      elsif ($item_ref->{status} == 1) {
-         push @results, $item_ref;
-      }
-   }
-   set_archive_remains($filename, $file_nb);
-   return @results;
+   return @to_sort;
 }
 
 
@@ -457,14 +574,17 @@ for (1 .. $threads_nb) {
 if ($rebuild) {
    scan_destfolder();
 }
+elsif ($recheck) {
+   scan_destfolder(1);
+}
 else {
-   scan_sourcefolder();
+   scan_new_archives();
 }
 
 if ($verbose) {
-   dump_dbs('accepted');
-   dump_dbs('rejected');
-   dump_dbs('archives');
+   for my $name (sort keys %catalog) {
+      dump_dbs($name);
+   }
 }
 
 db_close();
