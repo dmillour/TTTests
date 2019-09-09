@@ -16,6 +16,7 @@ use File::Copy 'copy';
 use Image::Resize;
 use MIME::Base64;
 use threads;
+use threads::shared;
 use Thread::Queue;
 use BerkeleyDB;
 use Getopt::Long;
@@ -205,6 +206,30 @@ sub producepic {
    }
 }
 
+#worker job to make the hash of the image
+sub hash_image {
+   threads->detach();
+   while (defined(my $item_ref = $hash_queue_in->dequeue())) {
+      my $filepath = $item_ref->{filename};
+      eval {
+        say "hahs $filepath";
+         my $hash = digest_file_hex($filepath, 'SHA1');
+         if ($recheck or not is_file_known($hash)) {
+            if ($recheck and is_special($hash)) {
+               my @special = split ',', get_special($hash);
+               $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => 0, special => $special[0]});
+            }
+            else {
+               $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => 0});
+            }
+         }
+         else {
+           $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => -1});
+         }
+
+      };
+   }
+}
 
 sub scan_new_archives {
    opendir(my $source_folderfh, $source_folderpath) or die "unable to open '$source_folderpath' $!";
@@ -215,7 +240,9 @@ sub scan_new_archives {
       if ($archivename =~ /\.(\w+)$/) {
          my $extention = lc $1;
          next unless grep { $extention eq $_ } @legal_archive_names;
+         say "unarchiving $archivename";
          my $dest_tmp_folderpath = unarchive($archivename, $extention);
+         say "scanning $archivename";
          scan_images($dest_tmp_folderpath, $archivename);
          remove_tree($dest_tmp_folderpath);
       }
@@ -223,10 +250,26 @@ sub scan_new_archives {
    close($source_folderfh);
 }
 
+sub add_with_wait {
+  my ($root_folderpath) = @_;
+  my %remains = map { $_ => 1 } add($root_folderpath);
+
+  my @files;
+  while (keys %remains) {
+    my $file_ref = $hash_queue_out->dequeue();
+    delete $remains{$file_ref->{filename}};
+    unless ($file_ref->{status}) {
+      push @files, $file_ref;
+    }
+  }
+  return sort { $a->{filename} cmp $b->{filename} } @files;
+}
+
 sub scan_images {
    my ($root_folderpath, $archivename) = @_;
-   my @files   = sort { $a->{filename} cmp $b->{filename} } add($root_folderpath);
+   my @files = add_with_wait($root_folderpath);
    my $file_nb = @files;
+   say "nb files in archive: $file_nb";
    if ($file_nb) {
       @files   = swipe(@files);
       $file_nb = move($root_folderpath, @files);
@@ -236,7 +279,7 @@ sub scan_images {
 
 sub scan_destfolder {
    my ($recheck) = @_;
-   my @files = add($dst_folderpath);
+   my @files = add_with_wait($dst_folderpath);
 
    if ($recheck) {
       @files = swipe(@files);
@@ -282,41 +325,16 @@ sub add {
             say "skipped because not an image: '$subfilepath'";
             next;
          }
-         my $hash = digest_file_hex($subfilepath, 'SHA1');
-         if ($recheck or not is_file_known($hash)) {
-            if ($recheck and is_special($hash)) {
-               my @special = split ',', get_special($hash);
-               push @results, {hash => $hash, filename => $subfilepath, status => 0, special => $special[0]};
-            }
-            else {
-               push @results, {hash => $hash, filename => $subfilepath, status => 0};
-            }
-
-         }
+         $hash_queue_in->enqueue({filename => $subfilepath});
+         push @results, $subfilepath;
       }
-
    }
-   return grep { defined $_ } @results;
+   return @results;
 }
 
-sub hash_image {
-   threads->detach();
-   while (defined(my $filepath = $hash_queue_in->dequeue())) {
-      last unless -f $filepath;
-      eval {
-         my $hash = digest_file_hex($filepath, 'SHA1');
-         if ($recheck or not is_file_known($hash)) {
-            if ($recheck and is_special($hash)) {
-               my @special = split ',', get_special($hash);
-               $hash_queue_out->enqueue( {hash => $hash, filename => $filepath, status => 0, special => $special[0]});
-            }
-            else {
-               $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => 0});
-            }
-         }
-      };
-   }
-}
+
+
+
 
 sub add_special {
    my @folders = map { File::Spec->catdir($dst_folderpath, $_->[1]) } values %special_folders;

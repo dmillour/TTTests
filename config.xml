@@ -4,7 +4,7 @@
   <dst>./output</dst>
   <buffer_size_up>4</buffer_size_up>
   <buffer_size_down>32</buffer_size_down>
-  <threads_nb>8</threads_nb>
+  <threads_nb>4</threads_nb>
   <special>
     <folder key="1" title="s1">./special_1</folder>
     <folder key="2" title="s2">./special_2</folder>
