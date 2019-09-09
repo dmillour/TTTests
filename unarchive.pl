@@ -47,8 +47,10 @@ my %catalog;
 my @legal_archive_names = ('zip', 'rar', '7z');
 my $mt                  = MIME::Types->new();
 
-my $queue_in  = Thread::Queue->new();
-my $queue_out = Thread::Queue->new();
+my $picresize_queue_in  = Thread::Queue->new();
+my $picresize_queue_out = Thread::Queue->new();
+my $hash_queue_in  = Thread::Queue->new();
+my $hash_queue_out = Thread::Queue->new();
 
 
 #command line options
@@ -161,6 +163,10 @@ sub get_special {
    return $result;
 }
 
+sub del_special {
+   my ($hash) = @_;
+   $catalog{special}->db_del($hash);
+}
 
 sub dump_dbs {
    my ($dbname) = @_;
@@ -178,7 +184,7 @@ sub dump_dbs {
 #worker job to cache the image rezizing
 sub producepic {
    threads->detach();
-   while (defined(my $item_ref = $queue_in->dequeue())) {
+   while (defined(my $item_ref = $picresize_queue_in->dequeue())) {
       my $index = $item_ref->[0];
       my $file  = $item_ref->[1];
       my $x     = $item_ref->[2];
@@ -195,7 +201,7 @@ sub producepic {
          $res = encode_base64($gd->png);
          $ok  = 1;
       };
-      $queue_out->enqueue([$index, $ok, $res]);
+      $picresize_queue_out->enqueue([$index, $ok, $res]);
    }
 }
 
@@ -293,6 +299,25 @@ sub add {
    return grep { defined $_ } @results;
 }
 
+sub hash_image {
+   threads->detach();
+   while (defined(my $filepath = $hash_queue_in->dequeue())) {
+      last unless -f $filepath;
+      eval {
+         my $hash = digest_file_hex($filepath, 'SHA1');
+         if ($recheck or not is_file_known($hash)) {
+            if ($recheck and is_special($hash)) {
+               my @special = split ',', get_special($hash);
+               $hash_queue_out->enqueue( {hash => $hash, filename => $filepath, status => 0, special => $special[0]});
+            }
+            else {
+               $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => 0});
+            }
+         }
+      };
+   }
+}
+
 sub add_special {
    my @folders = map { File::Spec->catdir($dst_folderpath, $_->[1]) } values %special_folders;
    for my $key (keys %special_folders) {
@@ -333,7 +358,7 @@ sub move {
          $file_nb++;
       }
       elsif ($status == 1) {
-         if (exists $item_ref->{special} and $item_ref->{special}) {
+         if (exists $item_ref->{special}) {
             copy_special_file($item_ref->{special}, $src_filepath);
          }
 
@@ -361,22 +386,25 @@ sub rename_dest_files {
 
 sub copy_special_file {
    my ($key, $src_filepath) = @_;
-   my $dst_folder = File::Spec->catdir($dst_folderpath, $special_folders{$key}[1]);
-   make_path($dst_folder);
    my $hash = digest_file_hex($src_filepath, 'SHA1');
+
    if (is_special($hash)) {
       my $current_special_filepath = get_special($hash);
-      unless (index $current_special_filepath, $dst_folder) {
+      my $dst_folder = $key ? File::Spec->catdir($dst_folderpath, $special_folders{$key}[1]) : '';
+      if ($dst_folder and not index $current_special_filepath, $dst_folder) {
          say "special '$src_filepath' already in '$current_special_filepath'";
          return;
       }
       else {
          unlink $current_special_filepath;
          say "delete special '$current_special_filepath'";
+         del_special($hash);
       }
    }
-   if ($src_filepath =~ /\.([^\.]+)$/) {
+   if ($key and $src_filepath =~ /\.([^\.]+)$/) {
       my $ext          = lc $1;
+      my $dst_folder = File::Spec->catdir($dst_folderpath, $special_folders{$key}[1]);
+      make_path($dst_folder);
       my $index        = get_special_index($dst_folder);
       my $dst_filepath = File::Spec->catfile($dst_folder, sprintf "%04d.%s", $index, $ext);
       say "special source '$src_filepath'\tto '$dst_filepath'";
@@ -439,7 +467,7 @@ sub swipe {
             delete $to_sort[$k]{ok}       if exists $to_sort[$k]{ok};
          }
          unless (exists $to_sort[$k]{resizing} and $to_sort[$k]{resizing}) {
-            $queue_in->enqueue([$k, $to_sort[$k]{filename}, $max{x}, $max{y}]);
+            $picresize_queue_in->enqueue([$k, $to_sort[$k]{filename}, $max{x}, $max{y}]);
             $to_sort[$k]{resizing} = 1;
          }
       }
@@ -448,7 +476,7 @@ sub swipe {
          delete $to_sort[$i - 1]{data};
          delete $to_sort[$i - 1]{ok};
       }
-      while (defined(my $item_ref = $queue_out->dequeue_nb())) {
+      while (defined(my $item_ref = $picresize_queue_out->dequeue_nb())) {
          my $index = $item_ref->[0];
          $to_sort[$index]{data}     = $item_ref->[2];
          $to_sort[$index]{ok}       = $item_ref->[1];
@@ -456,7 +484,7 @@ sub swipe {
 
       }
       while (not exists $to_sort[$$i_ref]{data}) {
-         my $item_ref = $queue_out->dequeue();
+         my $item_ref = $picresize_queue_out->dequeue();
          my $index    = $item_ref->[0];
          $to_sort[$index]{data}     = $item_ref->[2];
          $to_sort[$index]{ok}       = $item_ref->[1];
@@ -550,6 +578,8 @@ sub swipe {
    $mw->bind('<KeyRelease-e>', $execution_sub);
    $mw->bind('<KeyRelease-q>', sub { $mw->destroy() });
 
+   #if the key is empty, the special should reset
+   $mw->bind("<KeyRelease-f>", &$special_sub_factory(''));
    for my $key (keys %special_folders) {
       $mw->bind("<KeyRelease-$key>", &$special_sub_factory($key));
    }
@@ -570,6 +600,7 @@ db_init();
 #many worker
 for (1 .. $threads_nb) {
    threads->create('producepic');
+   threads->create('hash_image');
 }
 if ($rebuild) {
    scan_destfolder();
