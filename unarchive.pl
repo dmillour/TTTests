@@ -12,11 +12,11 @@ use File::Path qw(make_path remove_tree);
 use Data::TreeDumper;
 use MIME::Types;
 use File::Copy 'copy';
+use Sort::Naturally 'ncmp';
 
 use Image::Resize;
 use MIME::Base64;
 use threads;
-use threads::shared;
 use Thread::Queue;
 use BerkeleyDB;
 use Getopt::Long;
@@ -53,6 +53,7 @@ my $picresize_queue_out = Thread::Queue->new();
 my $hash_queue_in  = Thread::Queue->new();
 my $hash_queue_out = Thread::Queue->new();
 
+$hash_queue_out->limit = 1000;
 
 #command line options
 my $verbose = '';
@@ -66,6 +67,13 @@ sub db_init {
    for my $recname (keys %catalog_paths) {
       say "load db :'$recname'";
       $catalog{$recname} = new BerkeleyDB::Hash(-Filename => $catalog_paths{$recname}, -Flags => DB_CREATE) or die "Cannot open file: '$catalog_paths{$recname}' $!";
+   }
+}
+
+sub db_sync {
+   for my $recname (keys %catalog_paths) {
+      say "db sync :'$recname'";
+      $catalog{$recname}->db_sync();
    }
 }
 
@@ -209,24 +217,10 @@ sub producepic {
 #worker job to make the hash of the image
 sub hash_image {
    threads->detach();
-   while (defined(my $item_ref = $hash_queue_in->dequeue())) {
-      my $filepath = $item_ref->{filename};
+   while (defined(my $filepath = $hash_queue_in->dequeue())) {
       eval {
-        say "hahs $filepath";
          my $hash = digest_file_hex($filepath, 'SHA1');
-         if ($recheck or not is_file_known($hash)) {
-            if ($recheck and is_special($hash)) {
-               my @special = split ',', get_special($hash);
-               $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => 0, special => $special[0]});
-            }
-            else {
-               $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => 0});
-            }
-         }
-         else {
-           $hash_queue_out->enqueue({hash => $hash, filename => $filepath, status => -1});
-         }
-
+         $hash_queue_out->enqueue({hash => $hash, filename => $filepath});
       };
    }
 }
@@ -244,7 +238,20 @@ sub scan_new_archives {
          my $dest_tmp_folderpath = unarchive($archivename, $extention);
          say "scanning $archivename";
          scan_images($dest_tmp_folderpath, $archivename);
-         remove_tree($dest_tmp_folderpath);
+         say "deleting tmp folders";
+         remove_tree( $dest_tmp_folderpath, {safe => 1, error => \my $err} );
+         if ($err && @$err) {
+           for my $diag (@$err) {
+             my ($file, $message) = %$diag;
+             if ($file eq '') {
+               print "general error: $message\n";
+             }
+             else {
+               print "problem unlinking $file: $message\n";
+             }
+           }
+         }
+         say "tmp folders deleted";
       }
    }
    close($source_folderfh);
@@ -253,16 +260,24 @@ sub scan_new_archives {
 sub add_with_wait {
   my ($root_folderpath) = @_;
   my %remains = map { $_ => 1 } add($root_folderpath);
-
+  $hash_queue_in->enqueue(keys %remains);
   my @files;
   while (keys %remains) {
     my $file_ref = $hash_queue_out->dequeue();
-    delete $remains{$file_ref->{filename}};
-    unless ($file_ref->{status}) {
-      push @files, $file_ref;
+    my $filepath = $file_ref->{filename};
+    my $hash = $file_ref->{hash};
+    delete $remains{$filepath};
+    if ($recheck or not is_file_known($hash)) {
+       if ($recheck and is_special($hash)) {
+          my @special = split ',', get_special($hash);
+          push @files, {hash => $hash, filename => $filepath, status => 0, special => $special[0]};
+       }
+       else {
+          push @files,{hash => $hash, filename => $filepath, status => 0};
+       }
     }
   }
-  return sort { $a->{filename} cmp $b->{filename} } @files;
+  return sort { ncmp($a->{filename} , $b->{filename}) } @files;
 }
 
 sub scan_images {
@@ -273,6 +288,7 @@ sub scan_images {
    if ($file_nb) {
       @files   = swipe(@files);
       $file_nb = move($root_folderpath, @files);
+      say "remains in archive : $file_nb"
    }
    return $file_nb;
 }
@@ -325,10 +341,10 @@ sub add {
             say "skipped because not an image: '$subfilepath'";
             next;
          }
-         $hash_queue_in->enqueue({filename => $subfilepath});
          push @results, $subfilepath;
       }
    }
+   close($tmpfh);
    return @results;
 }
 
@@ -340,6 +356,7 @@ sub add_special {
    my @folders = map { File::Spec->catdir($dst_folderpath, $_->[1]) } values %special_folders;
    for my $key (keys %special_folders) {
       my $folder = File::Spec->catdir($dst_folderpath, $special_folders{$key}[1]);
+      next unless -d $folder;
       opendir(my $tmpfh, $folder) or die "unable to open '$folder' $!";
       while (my $subfilename = readdir $tmpfh) {
          next if $subfilename =~ /^\./;
@@ -356,6 +373,7 @@ sub add_special {
             set_special($hash, $key, $subfilepath);
          }
       }
+      close($tmpfh);
    }
 
 }
@@ -392,6 +410,7 @@ sub move {
          }
       }
    }
+   db_sync();
    return $file_nb;
 }
 
@@ -454,6 +473,7 @@ sub get_special_index {
          $max = $max > $1 ? $max : $1;
       }
    }
+   close($dst_folderfh);
    return $max + 1;
 }
 
@@ -613,13 +633,16 @@ sub swipe {
 
 #main
 
-db_init();
-
-#many worker
-for (1 .. $threads_nb) {
+#many workers
+for my $i (1 .. $threads_nb) {
    threads->create('producepic');
    threads->create('hash_image');
 }
+
+#load the DB
+db_init();
+
+
 if ($rebuild) {
    scan_destfolder();
 }
@@ -628,11 +651,12 @@ elsif ($recheck) {
 }
 else {
    scan_new_archives();
+   say "archives scanned";
 }
 
 if ($verbose) {
    for my $name (sort keys %catalog) {
-      dump_dbs($name);
+      eval {dump_dbs($name);};
    }
 }
 
